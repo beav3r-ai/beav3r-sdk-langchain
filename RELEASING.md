@@ -6,7 +6,7 @@ This document is for package maintainers.
 
 Publish `beav3r-sdk` before `beav3r-sdk-langchain`.
 
-The LangChain adapter depends on `beav3r-sdk>=0.1.0`, so public installation can fail if the
+The LangChain adapter depends on `beav3r-sdk>=1.0.0b1`, so public installation can fail if the
 adapter is published before the base SDK version it requires.
 
 ## Pre-release checks
