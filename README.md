@@ -142,6 +142,9 @@ For each protected tool call it sends a Beav3r action request with:
 - `attributes`
 - optional `actionId`
 
+This middleware remains compatibility-first: Beav3r decides whether execution is allowed,
+and LangChain still runs the tool inline after an `approved` or `executed` result.
+
 The default mapping is:
 
 - `actionType`: the configured `Beav3rToolConfig.action_type`, otherwise the tool name, or
@@ -179,6 +182,25 @@ becomes this Beav3r request by default:
   returns a `ToolMessage` explaining that the tool was blocked
 - `pending`: the middleware raises `Beav3rApprovalPendingError`
 
+### Executor-gated compatibility (optional)
+
+If your runtime has a separate executor layer, you can forward Beav3r execution metadata from
+`guard_and_wait` for downstream checks without changing default behavior.
+
+Set one or both of:
+
+- `authorization_metadata_key`: stores metadata on `request.tool_call[key]`
+- `authorization_metadata_hook`: callback receiving `(request, metadata)`
+
+The metadata includes available SDK fields such as:
+
+- `status`
+- `actionId`
+- `actionHash`
+- `evaluation`
+- `reason`
+- `pendingForMs`
+
 ## Configuration reference
 
 `Beav3rApprovalMiddleware(...)` accepts:
@@ -189,6 +211,8 @@ becomes this Beav3r request by default:
 - `action_namespace`: optional prefix used to derive default action types
 - `poll_interval_ms`: polling interval passed to `guard_and_wait`
 - `timeout_ms`: timeout passed to `guard_and_wait`
+- `authorization_metadata_key`: optional key for attaching Beav3r metadata to `request.tool_call`
+- `authorization_metadata_hook`: optional callback for observing Beav3r metadata per guarded call
 
 `Beav3rToolConfig(...)` accepts:
 
@@ -209,6 +233,16 @@ middleware = Beav3rApprovalMiddleware(
         "send_usdt": Beav3rToolConfig(action_type="payments.send_usdt"),
         "search_docs": False,
     },
+)
+```
+
+### Metadata propagation example
+
+```python
+middleware = Beav3rApprovalMiddleware(
+    client,
+    authorization_metadata_key="beav3r_authz",
+    authorization_metadata_hook=lambda request, metadata: print(metadata.get("actionHash")),
 )
 ```
 

@@ -118,6 +118,68 @@ class Beav3rLangChainMiddlewareTests(unittest.TestCase):
 
         self.assertEqual(result, "tool ran")
 
+    def test_exposes_authorization_metadata_for_executor_checks(self) -> None:
+        from beav3r_sdk.client import Beav3r
+        from langchain.tools.tool_node import ToolCallRequest
+        from langchain_beav3r import Beav3rApprovalMiddleware
+
+        captured: dict[str, object] = {}
+
+        def transport(url: str, method: str, headers: dict[str, str], body: bytes | None):
+            return {
+                "status": 200,
+                "headers": {},
+                "text": json.dumps(
+                    {
+                        "status": "approved",
+                        "actionId": "act_exec_gate",
+                        "actionHash": "hash_exec_gate",
+                        "evaluation": {
+                            "decision": "require_approval",
+                            "severity": "elevated",
+                            "reason": "manual review",
+                        },
+                    }
+                ),
+            }
+
+        request = ToolCallRequest(
+            tool_call={
+                "id": "call_meta",
+                "name": "run_sensitive_tool",
+                "args": {"target": "prod"},
+            }
+        )
+        middleware = Beav3rApprovalMiddleware(
+            Beav3r(base_url="http://beav3r.test", transport=transport),
+            authorization_metadata_key="beav3r_authz",
+            authorization_metadata_hook=lambda _req, metadata: captured.__setitem__(
+                "metadata", dict(metadata)
+            ),
+        )
+
+        def handler(req):
+            captured["request_metadata"] = req.tool_call["beav3r_authz"]
+            return "tool ran"
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        self.assertEqual(result, "tool ran")
+        self.assertEqual(
+            captured["request_metadata"],
+            {
+                "status": "approved",
+                "actionId": "act_exec_gate",
+                "actionHash": "hash_exec_gate",
+                "evaluation": {
+                    "decision": "require_approval",
+                    "severity": "elevated",
+                    "reason": "manual review",
+                },
+            },
+        )
+        self.assertEqual(captured["metadata"], captured["request_metadata"])
+
     def test_skips_unconfigured_tool_when_protection_disabled(self) -> None:
         from beav3r_sdk.client import Beav3r
         from langchain.tools.tool_node import ToolCallRequest

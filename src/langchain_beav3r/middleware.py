@@ -25,6 +25,7 @@ else:
 
 RequestBuilder: TypeAlias = Callable[[Any], Mapping[str, Any]]
 ToolConfigValue: TypeAlias = "Beav3rToolConfig | str | bool"
+AuthorizationMetadataHook: TypeAlias = Callable[[Any, Mapping[str, Any]], None]
 
 
 class Beav3rApprovalPendingError(RuntimeError):
@@ -55,6 +56,8 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
         action_namespace: str | None = None,
         poll_interval_ms: int = 3000,
         timeout_ms: int = 5 * 60 * 1000,
+        authorization_metadata_key: str | None = None,
+        authorization_metadata_hook: AuthorizationMetadataHook | None = None,
     ) -> None:
         _require_langchain()
         super().__init__()
@@ -64,6 +67,8 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
         self.action_namespace = (action_namespace or "").strip(".")
         self.poll_interval_ms = poll_interval_ms
         self.timeout_ms = timeout_ms
+        self.authorization_metadata_key = (authorization_metadata_key or "").strip() or None
+        self.authorization_metadata_hook = authorization_metadata_hook
 
     def wrap_tool_call(
         self,
@@ -122,6 +127,7 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
             poll_interval_ms=config.poll_interval_ms or self.poll_interval_ms,
             timeout_ms=config.timeout_ms or self.timeout_ms,
         )
+        self._propagate_authorization_metadata(request, result)
         status = str(result.get("status") or "")
         if status in {"approved", "executed"}:
             return None
@@ -169,6 +175,19 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
             action["actionId"] = config.action_id_builder(request)
         return action
 
+    def _propagate_authorization_metadata(
+        self,
+        request: ToolCallRequest,
+        result: Mapping[str, Any],
+    ) -> None:
+        metadata = _execution_metadata(result)
+        if self.authorization_metadata_key:
+            tool_call = getattr(request, "tool_call", None)
+            if isinstance(tool_call, dict):
+                tool_call[self.authorization_metadata_key] = dict(metadata)
+        if self.authorization_metadata_hook is not None:
+            self.authorization_metadata_hook(request, metadata)
+
     def _action_type_for(self, tool_name: str) -> str:
         if not self.action_namespace:
             return tool_name
@@ -210,6 +229,15 @@ def _blocked_tool_message(
         f"Beav3r blocked tool `{tool_name}` with status `{status}`: {reason}{suffix}. "
         "Adjust the request, update policy, or approve it in Beav3r before retrying."
     )
+
+
+def _execution_metadata(result: Mapping[str, Any]) -> JSON:
+    metadata: JSON = {}
+    for key in ("status", "actionId", "actionHash", "evaluation", "reason", "pendingForMs"):
+        value = result.get(key)
+        if value is not None:
+            metadata[key] = value
+    return metadata
 
 
 def _require_langchain() -> None:
