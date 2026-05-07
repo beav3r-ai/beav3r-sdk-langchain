@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beav3r-sdk-langchain"
-version = "1.0.0b1"
+version = "1.0.0"
 description = "LangChain middleware for routing sensitive tool calls through Beav3r approvals."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,7 +13,7 @@ authors = [
   { name = "Beav3r" }
 ]
 dependencies = [
-  "beav3r-sdk>=1.0.0b1",
+  "beav3r-sdk>=2.0.0",
   "langchain>=1.0.0",
   "langgraph>=0.4.0",
 ]

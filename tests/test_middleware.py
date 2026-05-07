@@ -134,6 +134,10 @@ class Beav3rLangChainMiddlewareTests(unittest.TestCase):
                         "status": "approved",
                         "actionId": "act_exec_gate",
                         "actionHash": "hash_exec_gate",
+                        "executionAuthorizationArtifact": {
+                            "artifactId": "artifact_exec_gate",
+                            "actionHash": "hash_exec_gate",
+                        },
                         "evaluation": {
                             "decision": "require_approval",
                             "severity": "elevated",
@@ -171,6 +175,10 @@ class Beav3rLangChainMiddlewareTests(unittest.TestCase):
                 "status": "approved",
                 "actionId": "act_exec_gate",
                 "actionHash": "hash_exec_gate",
+                "executionAuthorizationArtifact": {
+                    "artifactId": "artifact_exec_gate",
+                    "actionHash": "hash_exec_gate",
+                },
                 "evaluation": {
                     "decision": "require_approval",
                     "severity": "elevated",
@@ -179,6 +187,143 @@ class Beav3rLangChainMiddlewareTests(unittest.TestCase):
             },
         )
         self.assertEqual(captured["metadata"], captured["request_metadata"])
+
+    def test_approve_deny_pending_behavior_unchanged(self) -> None:
+        from beav3r_sdk.client import Beav3r
+        from langchain.tools.tool_node import ToolCallRequest
+        from langchain_beav3r import Beav3rApprovalMiddleware, Beav3rApprovalPendingError
+
+        scenarios = [
+            ("approved", "tool ran", None),
+            ("denied", "blocked", None),
+            ("pending", "pending", Beav3rApprovalPendingError),
+        ]
+
+        for status, expected, expected_error in scenarios:
+            with self.subTest(status=status):
+                def transport(url: str, method: str, headers: dict[str, str], body: bytes | None):
+                    return {
+                        "status": 200,
+                        "headers": {},
+                        "text": json.dumps(
+                            {
+                                "status": status,
+                                "actionId": f"act_{status}",
+                                "actionHash": f"hash_{status}",
+                                "reason": f"reason_{status}",
+                            }
+                        ),
+                    }
+
+                middleware = Beav3rApprovalMiddleware(
+                    Beav3r(base_url="http://beav3r.test", transport=transport),
+                    execution_auth_audience="payments-executor",
+                )
+                request = ToolCallRequest(
+                    tool_call={
+                        "id": f"call_{status}",
+                        "name": "send_usdt",
+                        "args": {"amount": 25},
+                    }
+                )
+
+                if expected_error is not None:
+                    with self.assertRaises(expected_error):
+                        middleware.wrap_tool_call(request, lambda _request: "tool ran")
+                    continue
+
+                result = middleware.wrap_tool_call(
+                    request,
+                    lambda _request: "tool ran",
+                )
+                if expected == "blocked":
+                    self.assertEqual(result.tool_call_id, f"call_{status}")
+                    self.assertIn("Beav3r blocked tool", result.content)
+                else:
+                    self.assertEqual(result, expected)
+
+    def test_passes_execution_auth_audience_when_configured(self) -> None:
+        from beav3r_sdk.client import Beav3r
+        from langchain.tools.tool_node import ToolCallRequest
+        from langchain_beav3r import Beav3rApprovalMiddleware, Beav3rToolConfig
+
+        def transport(url: str, method: str, headers: dict[str, str], body: bytes | None):
+            return {
+                "status": 200,
+                "headers": {},
+                "text": json.dumps(
+                    {
+                        "status": "approved",
+                        "actionId": "act_audience",
+                        "actionHash": "hash_audience",
+                    }
+                ),
+            }
+
+        client = Beav3r(base_url="http://beav3r.test", transport=transport)
+        middleware = Beav3rApprovalMiddleware(
+            client,
+            execution_auth_audience="payments-executor",
+            tool_configs={
+                "send_usdt": Beav3rToolConfig(
+                    execution_auth_audience="payments-executor-overridden"
+                )
+            },
+        )
+        request = ToolCallRequest(
+            tool_call={
+                "id": "call_audience",
+                "name": "send_usdt",
+                "args": {"amount": 25},
+            }
+        )
+
+        result = middleware.wrap_tool_call(request, lambda _request: "tool ran")
+
+        self.assertEqual(result, "tool ran")
+        self.assertEqual(
+            client.last_guard_and_wait_kwargs,
+            {
+                "poll_interval_ms": 3000,
+                "timeout_ms": 5 * 60 * 1000,
+                "execution_auth_audience": "payments-executor-overridden",
+                "audience": None,
+            },
+        )
+
+    def test_does_not_break_legacy_guard_and_wait_signature(self) -> None:
+        from langchain.tools.tool_node import ToolCallRequest
+        from langchain_beav3r import Beav3rApprovalMiddleware
+
+        class LegacyClient:
+            def guard_and_wait(
+                self,
+                input: dict[str, object],
+                *,
+                poll_interval_ms: int = 3000,
+                timeout_ms: int = 5 * 60 * 1000,
+            ) -> dict[str, object]:
+                return {
+                    "status": "approved",
+                    "actionId": "act_legacy",
+                    "actionHash": "hash_legacy",
+                }
+
+        middleware = Beav3rApprovalMiddleware(
+            LegacyClient(),  # type: ignore[arg-type]
+            execution_auth_audience="payments-executor",
+        )
+        request = ToolCallRequest(
+            tool_call={
+                "id": "call_legacy",
+                "name": "send_usdt",
+                "args": {"amount": 1},
+            }
+        )
+
+        result = middleware.wrap_tool_call(request, lambda _request: "tool ran")
+
+        self.assertEqual(result, "tool ran")
 
     def test_skips_unconfigured_tool_when_protection_disabled(self) -> None:
         from beav3r_sdk.client import Beav3r
@@ -415,6 +560,7 @@ def install_dependency_stubs() -> list[str]:
             self.api_key = api_key
             self.default_expiry_seconds = default_expiry_seconds
             self.transport = transport
+            self.last_guard_and_wait_kwargs: dict[str, object] | None = None
 
         def guard_and_wait(
             self,
@@ -422,7 +568,15 @@ def install_dependency_stubs() -> list[str]:
             *,
             poll_interval_ms: int = 3000,
             timeout_ms: int = 5 * 60 * 1000,
+            execution_auth_audience: str | None = None,
+            audience: str | None = None,
         ) -> dict[str, object]:
+            self.last_guard_and_wait_kwargs = {
+                "poll_interval_ms": poll_interval_ms,
+                "timeout_ms": timeout_ms,
+                "execution_auth_audience": execution_auth_audience,
+                "audience": audience,
+            }
             body = {
                 "actionId": input.get("actionId") or "generated_action",
                 "agentId": input.get("agentId") or self.agent_id or "agent_default",

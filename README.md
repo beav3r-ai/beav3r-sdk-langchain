@@ -200,6 +200,7 @@ The metadata includes available SDK fields such as:
 - `evaluation`
 - `reason`
 - `pendingForMs`
+- `executionAuthorizationArtifact`
 
 ## Configuration reference
 
@@ -211,6 +212,7 @@ The metadata includes available SDK fields such as:
 - `action_namespace`: optional prefix used to derive default action types
 - `poll_interval_ms`: polling interval passed to `guard_and_wait`
 - `timeout_ms`: timeout passed to `guard_and_wait`
+- `execution_auth_audience`: optional executor audience forwarded to SDK `guard_and_wait` (requires the underlying Beav3r API key to carry `actions:execute` for artifact minting)
 - `authorization_metadata_key`: optional key for attaching Beav3r metadata to `request.tool_call`
 - `authorization_metadata_hook`: optional callback for observing Beav3r metadata per guarded call
 
@@ -222,6 +224,7 @@ The metadata includes available SDK fields such as:
 - `action_id_builder`: callable that supplies a custom Beav3r action id
 - `poll_interval_ms`: per-tool polling override
 - `timeout_ms`: per-tool timeout override
+- `execution_auth_audience`: per-tool audience override for execution authorization artifact minting
 
 ### Protecting specific tools
 

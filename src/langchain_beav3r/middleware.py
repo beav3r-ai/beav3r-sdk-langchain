@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, TypeAlias
 
@@ -44,6 +45,7 @@ class Beav3rToolConfig:
     action_id_builder: Callable[[Any], str] | None = None
     poll_interval_ms: int | None = None
     timeout_ms: int | None = None
+    execution_auth_audience: str | None = None
 
 
 class Beav3rApprovalMiddleware(AgentMiddleware):
@@ -56,6 +58,7 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
         action_namespace: str | None = None,
         poll_interval_ms: int = 3000,
         timeout_ms: int = 5 * 60 * 1000,
+        execution_auth_audience: str | None = None,
         authorization_metadata_key: str | None = None,
         authorization_metadata_hook: AuthorizationMetadataHook | None = None,
     ) -> None:
@@ -67,6 +70,9 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
         self.action_namespace = (action_namespace or "").strip(".")
         self.poll_interval_ms = poll_interval_ms
         self.timeout_ms = timeout_ms
+        self.execution_auth_audience = (
+            (execution_auth_audience or "").strip() or None
+        )
         self.authorization_metadata_key = (authorization_metadata_key or "").strip() or None
         self.authorization_metadata_hook = authorization_metadata_hook
 
@@ -124,8 +130,7 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
         action = self._build_action_request(request, config)
         result = self.client.guard_and_wait(
             action,
-            poll_interval_ms=config.poll_interval_ms or self.poll_interval_ms,
-            timeout_ms=config.timeout_ms or self.timeout_ms,
+            **self._guard_and_wait_options(config),
         )
         self._propagate_authorization_metadata(request, result)
         status = str(result.get("status") or "")
@@ -174,6 +179,25 @@ class Beav3rApprovalMiddleware(AgentMiddleware):
         if config.action_id_builder is not None:
             action["actionId"] = config.action_id_builder(request)
         return action
+
+    def _guard_and_wait_options(self, config: Beav3rToolConfig) -> JSON:
+        options: JSON = {
+            "poll_interval_ms": config.poll_interval_ms or self.poll_interval_ms,
+            "timeout_ms": config.timeout_ms or self.timeout_ms,
+        }
+        audience = (
+            (config.execution_auth_audience or "").strip()
+            or self.execution_auth_audience
+        )
+        if audience is None:
+            return options
+
+        guard_and_wait = self.client.guard_and_wait
+        if _supports_keyword(guard_and_wait, "execution_auth_audience"):
+            options["execution_auth_audience"] = audience
+        elif _supports_keyword(guard_and_wait, "audience"):
+            options["audience"] = audience
+        return options
 
     def _propagate_authorization_metadata(
         self,
@@ -233,11 +257,31 @@ def _blocked_tool_message(
 
 def _execution_metadata(result: Mapping[str, Any]) -> JSON:
     metadata: JSON = {}
-    for key in ("status", "actionId", "actionHash", "evaluation", "reason", "pendingForMs"):
+    for key in (
+        "status",
+        "actionId",
+        "actionHash",
+        "evaluation",
+        "reason",
+        "pendingForMs",
+        "executionAuthorizationArtifact",
+    ):
         value = result.get(key)
         if value is not None:
             metadata[key] = value
     return metadata
+
+
+def _supports_keyword(function: Callable[..., Any], keyword: str) -> bool:
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return False
+
+    parameters = signature.parameters.values()
+    if any(param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters):
+        return True
+    return keyword in signature.parameters
 
 
 def _require_langchain() -> None:
